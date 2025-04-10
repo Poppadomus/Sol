@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Solar System Simulator (3D) - WASD Orbiting</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #canvas {
+            border: 2px solid #fff;
+            background: #000;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+        }
+        #controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            max-width: 1200px;
+            width: 100%;
+        }
+        button {
+            padding: 8px 15px;
+            background: #ff69b4;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #ff1493;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        label {
+            color: #fff;
+            font-size: 16px;
+        }
+        input[type="range"] {
+            width: 100px;
+            accent-color: #ff69b4;
+            cursor: pointer;
+        }
+        #info-panel {
+            color: #fff;
+            font-size: 14px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 5px;
+            max-width: 1200px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="1200" height="1200"></canvas>
+    <div id="controls">
+        <button onclick="resetSimulation()">Reset</button>
+        <button onclick="togglePause()">Pause/Play</button>
+        <div class="control-group">
+            <label for="speedSlider">Speed:</label>
+            <input type="range" id="speedSlider" min="0.001" max="500" step="0.001" value="1">
+        </div>
+        <button onclick="toggleLabels()">Toggle Labels</button>
+        <button onclick="toggleMoonTrails()">Toggle Moon Trails</button>
+        <div class="control-group">
+            <label for="fontSizeSlider">Font Size:</label>
+            <input type="range" id="fontSizeSlider" min="8" max="48" step="1" value="12">
+        </div>
+        <div class="control-group">
+            <label for="planetSizeSlider">Planet Size:</label>
+            <input type="range" id="planetSizeSlider" min="0.1" max="500" step="0.1" value="1">
+        </div>
+        <div class="control-group">
+            <label for="moonSizeSlider">Moon Size:</label>
+            <input type="range" id="moonSizeSlider" min="0.1" max="500" step="0.1" value="1">
+        </div>
+        <div class="control-group">
+            <label for="starSizeSlider">Star Size:</label>
+            <input type="range" id="starSizeSlider" min="0.1" max="500" step="0.1" value="1">
+        </div>
+        <div class="control-group">
+            <label for="planetTrailSlider">Planet Trails:</label>
+            <input type="range" id="planetTrailSlider" min="0" max="10" step="0.1" value="5">
+        </div>
+        <div class="control-group">
+            <label for="moonTrailSlider">Moon Trails:</label>
+            <input type="range" id="moonTrailSlider" min="0" max="10" step="0.1" value="5">
+        </div>
+        <button onclick="toggleMoons()">Toggle Moons</button>
+        <button onclick="togglePlanets()">Toggle Planets</button>
+        <button onclick="toggleSun()">Toggle Sun</button>
+        <button onclick="toggleKuiperBelt()">Toggle Kuiper Belt</button>
+        <button onclick="toggleOortCloud()">Toggle Oort Cloud</button>
+    </div>
+    <div id="info-panel">Use WASD to orbit, Q/E to move up/down</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const speedSlider = document.getElementById('speedSlider');
+        const fontSizeSlider = document.getElementById('fontSizeSlider');
+        const planetSizeSlider = document.getElementById('planetSizeSlider');
+        const moonSizeSlider = document.getElementById('moonSizeSlider');
+        const starSizeSlider = document.getElementById('starSizeSlider');
+        const planetTrailSlider = document.getElementById('planetTrailSlider');
+        const moonTrailSlider = document.getElementById('moonTrailSlider');
+        const infoPanel = document.getElementById('info-panel');
+
+        // Constants
+        const AU = 1.496e11; // meters
+        const BASE_SCALE = 1e-9; // Adjusted for 3D
+        const MOON_SCALE = 1e-7;
+        const BASE_DT = 86400; // 1 day in seconds
+        const J2000_EPOCH = new Date('2000-01-01T12:00:00Z').getTime() / 1000;
+        const CURRENT_DATE = new Date('2025-04-10T00:00:00Z').getTime() / 1000;
+        const SECONDS_SINCE_J2000 = CURRENT_DATE - J2000_EPOCH;
+
+        // Three.js Setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 10000);
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(canvas.width, canvas.height);
+        renderer.setClearColor(0x000000);
+
+        // Camera Controls
+        let cameraRadius = 50 * AU * BASE_SCALE; // Initial distance from Sun
+        let cameraTheta = Math.PI / 2; // Horizontal angle
+        let cameraPhi = Math.PI / 2; // Vertical angle
+        const moveSpeed = 0.05;
+        const keys = {};
+
+        // Simulation State
+        let paused = false;
+        let speedMultiplier = 1;
+        let moonSpeedFactor = 0.1;
+        let elapsedTime = 0;
+        let showLabels = true;
+        let showMoonTrails = true;
+        let fontSize = 12;
+        let planetSizeMultiplier = 1;
+        let moonSizeMultiplier = 1;
+        let starSizeMultiplier = 1;
+        let planetTrailMultiplier = 5;
+        let moonTrailMultiplier = 5;
+        let showMoons = true;
+        let showPlanets = true;
+        let showSun = true;
+        let showKuiperBelt = true;
+        let showOortCloud = true;
+        let celestialBodies = [];
+        let kuiperBeltParticles = [];
+        let oortCloudParticles = [];
+
+        // Event Listeners
+        speedSlider.addEventListener('input', () => speedMultiplier = parseFloat(speedSlider.value));
+        fontSizeSlider.addEventListener('input', () => fontSize = parseFloat(fontSizeSlider.value));
+        planetSizeSlider.addEventListener('input', () => {
+            planetSizeMultiplier = parseFloat(planetSizeSlider.value);
+            updateBodySizes();
+        });
+        moonSizeSlider.addEventListener('input', () => {
+            moonSizeMultiplier = parseFloat(moonSizeSlider.value);
+            updateBodySizes();
+        });
+        starSizeSlider.addEventListener('input', () => {
+            starSizeMultiplier = parseFloat(starSizeSlider.value);
+            updateBodySizes();
+        });
+        planetTrailSlider.addEventListener('input', () => {
+            planetTrailMultiplier = parseFloat(planetTrailSlider.value);
+            updateTrailLifetimes();
+        });
+        moonTrailSlider.addEventListener('input', () => {
+            moonTrailMultiplier = parseFloat(moonTrailSlider.value);
+            updateTrailLifetimes();
+        });
+        document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+
+        function hexToRGB(hex) {
+            const r = parseInt(hex.slice(1, 3), 16) / 255;
+            const g = parseInt(hex.slice(3, 5), 16) / 255;
+            const b = parseInt(hex.slice(5, 7), 16) / 255;
+            return [r, g, b];
+        }
+
+        function solveKepler(M, e) {
+            let E = M;
+            for (let i = 0; i < 20; i++) {
+                E -= (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+            }
+            return E;
+        }
+
+        class CelestialBody {
+            constructor(name, shortName, mass, color, a, e, i, omega, periodDays, tilt, radiusKm, M0, parent = null) {
+                this.name = name;
+                this.shortName = shortName;
+                this.mass = mass;
+                this.color = color;
+                this.a = a;
+                this.e = e;
+                this.i = i * Math.PI / 180;
+                this.omega = omega * Math.PI / 180;
+                this.period = periodDays * 86400;
+                this.tilt = tilt * Math.PI / 180;
+                this.baseRadius = radiusKm * 1e-6;
+                this.radius = this.baseRadius * (this.name === 'Sun' ? starSizeMultiplier : (parent ? moonSizeMultiplier : planetSizeMultiplier));
+                this.M0 = M0 * Math.PI / 180;
+                this.parent = parent;
+                this.isMoon = !!parent;
+                this.isSun = name === 'Sun';
+                this.trail = [];
+                this.trailMaxPoints = this.isMoon ? 100 : 200;
+                this.trailLifetime = this.a > 0 ? this.period * (this.isMoon ? moonTrailMultiplier : planetTrailMultiplier) / BASE_DT : 0;
+
+                // Three.js Objects
+                const geometry = new THREE.SphereGeometry(this.radius, 32, 32);
+                const material = new THREE.MeshBasicMaterial({ color: this.color });
+                this.mesh = new THREE.Mesh(geometry, material);
+                scene.add(this.mesh);
+
+                if (this.a > 0) {
+                    this.trailGeometry = new THREE.BufferGeometry();
+                    this.trailMaterial = new THREE.LineBasicMaterial({ color: this.color, transparent: true, opacity: 0.5 });
+                    this.trailLine = new THREE.Line(this.trailGeometry, this.trailMaterial);
+                    scene.add(this.trailLine);
+                }
+
+                if (showLabels) {
+                    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+                        map: new THREE.CanvasTexture(createLabel(this.shortName)),
+                        transparent: true
+                    }));
+                    sprite.scale.set(fontSize * 0.1, fontSize * 0.05, 1);
+                    this.label = sprite;
+                    scene.add(this.label);
+                }
+
+                this.updatePosition();
+            }
+
+            updatePosition() {
+                if (this.a === 0) return;
+
+                const n = 2 * Math.PI / this.period;
+                const effectiveSpeed = this.isMoon ? speedMultiplier * moonSpeedFactor : speedMultiplier;
+                const timeSinceJ2000 = SECONDS_SINCE_J2000 + elapsedTime * effectiveSpeed;
+                this.meanAnomaly = (this.M0 + n * timeSinceJ2000) % (2 * Math.PI);
+                const E = solveKepler(this.meanAnomaly, this.e);
+                const nu = 2 * Math.atan2(
+                    Math.sqrt(1 + this.e) * Math.sin(E / 2),
+                    Math.sqrt(1 - this.e) * Math.cos(E / 2)
+                );
+                const r = this.a * (1 - this.e * Math.cos(E)) * AU;
+                const scale = this.isMoon ? MOON_SCALE : BASE_SCALE;
+
+                const xOrb = r * Math.cos(nu);
+                const yOrb = r * Math.sin(nu);
+                const zOrb = r * Math.sin(nu) * Math.sin(this.i);
+
+                const posX = scale * (xOrb * Math.cos(this.omega) - yOrb * Math.sin(this.omega) * Math.cos(this.i));
+                const posY = scale * (yOrb * Math.cos(this.i));
+                const posZ = scale * (yOrb * Math.sin(this.i));
+
+                if (this.isMoon) {
+                    const parentBody = celestialBodies.find(b => b.name === this.parent);
+                    if (parentBody) {
+                        this.mesh.position.set(
+                            parentBody.mesh.position.x + posX,
+                            parentBody.mesh.position.y + posY,
+                            parentBody.mesh.position.z + posZ
+                        );
+                    }
+                } else {
+                    this.mesh.position.set(posX, posY, posZ);
+                }
+
+                if (this.label) {
+                    this.label.position.set(
+                        this.mesh.position.x + this.radius * 1.5,
+                        this.mesh.position.y + this.radius * 1.5,
+                        this.mesh.position.z
+                    );
+                }
+
+                this.addTrailPoint();
+            }
+
+            addTrailPoint() {
+                if (this.a === 0) return;
+                this.trail.push({
+                    x: this.mesh.position.x,
+                    y: this.mesh.position.y,
+                    z: this.mesh.position.z,
+                    age: 0
+                });
+                if (this.trail.length > this.trailMaxPoints) this.trail.shift();
+                this.updateTrailGeometry();
+            }
+
+            updateTrail() {
+                if (this.a === 0) return;
+                const effectiveSpeed = this.isMoon ? speedMultiplier * moonSpeedFactor : speedMultiplier;
+                for (let i = this.trail.length - 1; i >= 0; i--) {
+                    this.trail[i].age += effectiveSpeed;
+                    if (this.trail[i].age > this.trailLifetime) this.trail.splice(i, 1);
+                }
+                this.updateTrailGeometry();
+            }
+
+            updateTrailGeometry() {
+                if (!this.trailLine || (this.isMoon && !showMoonTrails)) return;
+                const positions = new Float32Array(this.trail.length * 3);
+                for (let i = 0; i < this.trail.length; i++) {
+                    positions[i * 3] = this.trail[i].x;
+                    positions[i * 3 + 1] = this.trail[i].y;
+                    positions[i * 3 + 2] = this.trail[i].z;
+                }
+                this.trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            }
+
+            shouldDraw() {
+                if (this.isSun) return showSun;
+                if (this.isMoon) return showMoons;
+                return showPlanets;
+            }
+
+            update() {
+                if (paused || !this.shouldDraw()) return;
+                this.updatePosition();
+                this.updateTrail();
+                this.mesh.visible = this.shouldDraw();
+                if (this.trailLine) this.trailLine.visible = this.shouldDraw() && (!this.isMoon || showMoonTrails);
+                if (this.label) this.label.visible = showLabels && this.shouldDraw();
+            }
+        }
+
+        class Particle {
+            constructor(x, y, z, color, radius) {
+                this.mesh = new THREE.Mesh(
+                    new THREE.SphereGeometry(radius, 16, 16),
+                    new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.6 })
+                );
+                this.mesh.position.set(x, y, z);
+                scene.add(this.mesh);
+            }
+        }
+
+        function createLabel(text) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 256;
+            canvas.height = 128;
+            ctx.font = `${fontSize}px Arial`;
+            ctx.fillStyle = 'white';
+            ctx.fillText(text, 10, 64);
+            return canvas;
+        }
+
+        function initKuiperBelt() {
+            kuiperBeltParticles = [];
+            const numParticles = 400;
+            const innerRadius = 30 * AU;
+            const outerRadius = 50 * AU;
+
+            for (let i = 0; i < numParticles; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = innerRadius + Math.random() * (outerRadius - innerRadius);
+                const x = (radius * BASE_SCALE * Math.cos(angle));
+                const y = (radius * BASE_SCALE * Math.sin(angle));
+                const z = (Math.random() - 0.5) * 2 * AU * BASE_SCALE;
+                kuiperBeltParticles.push(new Particle(x, y, z, '#6495ed', 0.05));
+            }
+        }
+
+        function initOortCloud() {
+            oortCloudParticles = [];
+            const numParticles = 750;
+            const innerRadius = 2000 * AU;
+            const outerRadius = 10000 * AU;
+
+            for (let i = 0; i < numParticles; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const radius = innerRadius + Math.random() * (outerRadius - innerRadius);
+                const x = (radius * BASE_SCALE * Math.sin(phi) * Math.cos(theta));
+                const y = (radius * BASE_SCALE * Math.sin(phi) * Math.sin(theta));
+                const z = (radius * BASE_SCALE * Math.cos(phi));
+                oortCloudParticles.push(new Particle(x, y, z, '#ffffff', 0.03));
+            }
+        }
+
+        function initSimulation() {
+            celestialBodies = [
+                new CelestialBody('Sun', 'Sun', 1.989e30, '#ffa500', 0, 0, 0, 0, 0, 7.25, 695000, 0),
+                new CelestialBody('Mercury', 'Merc', 3.3e23, '#ff1493', 0.387, 0.2056, 7.00, 48.33, 87.97, 0.03, 2439.7, 174.796),
+                new CelestialBody('Venus', 'Ven', 4.87e24, '#ffa500', 0.723, 0.0068, 3.39, 76.68, 224.7, 177.4, 6051.8, 50.115),
+                new CelestialBody('Earth', 'Ear', 5.97e24, '#00ffff', 1.000, 0.0167, 0.00, 0.00, 365.25, 23.44, 6371, 102.947),
+                new CelestialBody('Mars', 'Mar', 6.42e23, '#ff0000', 1.524, 0.0934, 1.85, 49.56, 686.98, 25.19, 3389.5, 19.373),
+                new CelestialBody('Jupiter', 'Jup', 1.898e27, '#9400d3', 5.203, 0.0484, 1.30, 100.45, 4332.59, 3.13, 69911, 20.020),
+                new CelestialBody('Saturn', 'Sat', 5.68e26, '#00ff00', 9.537, 0.0542, 2.49, 113.67, 10759.22, 26.73, 58232, 317.020),
+                new CelestialBody('Uranus', 'Ura', 8.68e25, '#00b7eb', 19.191, 0.0472, 0.77, 74.00, 30688.5, 97.77, 25362, 141.050),
+                new CelestialBody('Neptune', 'Nep', 1.02e26, '#0000ff', 30.069, 0.0086, 1.77, 131.78, 59800, 28.32, 24622, 256.228),
+                new CelestialBody('Moon', 'Moon', 7.342e22, '#c0c0c0', 0.00257, 0.0549, 5.145, 0, 27.32, 6.687, 1737.4, 0, 'Earth'),
+                new CelestialBody('Phobos', 'Pho', 1.0659e16, '#8b4513', 0.0000626, 0.0151, 1.08, 0, 0.319, 0, 11.1, 0, 'Mars'),
+                new CelestialBody('Deimos', 'Dei', 1.4762e15, '#a0522d', 0.000157, 0.00033, 1.79, 0, 1.263, 0, 6.2, 0, 'Mars'),
+                new CelestialBody('Io', 'Io', 8.932e22, '#ffff00', 0.002819, 0.0041, 0.05, 0, 1.769, 0, 1821.6, 0, 'Jupiter'),
+                new CelestialBody('Europa', 'Eur', 4.8e22, '#d3d3d3', 0.004486, 0.009, 0.47, 0, 3.551, 0, 1560.8, 0, 'Jupiter'),
+                new CelestialBody('Ganymede', 'Gan', 1.482e23, '#a9a9a9', 0.007155, 0.0011, 0.20, 0, 7.155, 0, 2634.1, 0, 'Jupiter'),
+                new CelestialBody('Callisto', 'Cal', 1.076e23, '#808080', 0.012821, 0.0074, 0.19, 0, 16.689, 0, 2410.3, 0, 'Jupiter'),
+                new CelestialBody('Amalthea', 'Ama', 2.08e18, '#ff4500', 0.00121, 0.003, 0.37, 0, 0.498, 0, 83.5, 0, 'Jupiter'),
+                new CelestialBody('Himalia', 'Him', 4.2e18, '#696969', 0.076, 0.162, 27.5, 0, 250.56, 0, 85, 0, 'Jupiter'),
+                new CelestialBody('Elara', 'Ela', 8.7e17, '#708090', 0.078, 0.217, 26.63, 0, 259.64, 0, 43, 0, 'Jupiter'),
+                new CelestialBody('Titan', 'Tit', 1.345e23, '#ffa500', 0.008167, 0.0288, 0.35, 0, 15.945, 0, 2575, 0, 'Saturn'),
+                new CelestialBody('Enceladus', 'Enc', 1.08e20, '#ffffff', 0.001370, 0.0047, 0.02, 0, 1.370, 0, 252.1, 0, 'Saturn'),
+                new CelestialBody('Rhea', 'Rhe', 2.31e21, '#d3d3d3', 0.003519, 0.001, 0.33, 0, 4.518, 0, 764.3, 0, 'Saturn'),
+                new CelestialBody('Dione', 'Dio', 1.095e21, '#b0c4de', 0.00252, 0.0022, 0.02, 0, 2.737, 0, 561.7, 0, 'Saturn'),
+                new CelestialBody('Tethys', 'Tet', 6.17e20, '#f0f8ff', 0.00197, 0.0001, 1.12, 0, 1.888, 0, 531.1, 0, 'Saturn'),
+                new CelestialBody('Iapetus', 'Iap', 1.805e21, '#2f4f4f', 0.0238, 0.0283, 15.47, 0, 79.33, 0, 735.6, 0, 'Saturn'),
+                new CelestialBody('Mimas', 'Mim', 3.75e19, '#dcdcdc', 0.00124, 0.0196, 1.57, 0, 0.942, 0, 198.2, 0, 'Saturn'),
+                new CelestialBody('Hyperion', 'Hyp', 5.58e18, '#cd853f', 0.00683, 0.1042, 0.43, 0, 21.276, 0, 135, 0, 'Saturn'),
+                new CelestialBody('Phoebe', 'Phe', 8.3e18, '#4682b4', 0.086, 0.156, 175.2, 0, 550.31, 0, 106.5, 0, 'Saturn'),
+                new CelestialBody('Titania', 'Tit', 3.4e21, '#b0c4de', 0.002911, 0.0011, 0.08, 0, 8.706, 0, 788.9, 0, 'Uranus'),
+                new CelestialBody('Oberon', 'Obe', 2.88e21, '#a9a9a9', 0.003892, 0.0014, 0.06, 0, 13.463, 0, 761.4, 0, 'Uranus'),
+                new CelestialBody('Umbriel', 'Umb', 1.27e21, '#696969', 0.00178, 0.0039, 0.13, 0, 4.144, 0, 584.7, 0, 'Uranus'),
+                new CelestialBody('Ariel', 'Ari', 1.25e21, '#e0ffff', 0.00127, 0.0013, 0.04, 0, 2.520, 0, 578.9, 0, 'Uranus'),
+                new CelestialBody('Miranda', 'Mir', 6.59e19, '#f5f5f5', 0.000868, 0.0013, 4.34, 0, 1.413, 0, 235.8, 0, 'Uranus'),
+                new CelestialBody('Triton', 'Tri', 2.14e22, '#87ceeb', 0.002366, 0.000016, 156.8, 0, 5.877, 0, 1353.4, 0, 'Neptune'),
+                new CelestialBody('Nereid', 'Ner', 2.06e19, '#4682b4', 0.037, 0.751, 7.09, 0, 360.14, 0, 170, 0, 'Neptune'),
+                new CelestialBody('Proteus', 'Pro', 4.4e19, '#708090', 0.000785, 0.0005, 1.12, 0, 1.122, 0, 210, 0, 'Neptune'),
+                new CelestialBody('Larissa', 'Lar', 4.9e17, '#778899', 0.000693, 0.0014, 0.20, 0, 0.555, 0, 97, 0, 'Neptune'),
+                new CelestialBody('Galatea', 'Gal', 2.12e17, '#b0c4de', 0.000416, 0.0001, 0.05, 0, 0.429, 0, 88, 0, 'Neptune'),
+                new CelestialBody('Despina', 'Des', 2.1e17, '#a9a9a9', 0.000353, 0.0002, 0.07, 0, 0.335, 0, 75, 0, 'Neptune'),
+                new CelestialBody('Thalassa', 'Tha', 3.5e17, '#dcdcdc', 0.000345, 0.0002, 0.21, 0, 0.311, 0, 82, 0, 'Neptune'),
+                new CelestialBody('Naiad', 'Nai', 1.9e17, '#f0f8ff', 0.000329, 0.0003, 4.75, 0, 0.294, 0, 66, 0, 'Neptune'),
+                new CelestialBody('Pan', 'Pan', 4.95e15, '#deb887', 0.000892, 0.0001, 0, 0, 0.575, 0, 14, 0, 'Saturn'),
+                new CelestialBody('Atlas', 'Atl', 6.6e15, '#cd853f', 0.000919, 0.0012, 0, 0, 0.602, 0, 15, 0, 'Saturn'),
+                new CelestialBody('Prometheus', 'Prm', 1.595e17, '#f4a460', 0.000933, 0.0022, 0.03, 0, 0.613, 0, 50, 0, 'Saturn'),
+                new CelestialBody('Pandora', 'Pnd', 1.371e17, '#d2b48c', 0.000941, 0.0042, 0.05, 0, 0.629, 0, 40, 0, 'Saturn'),
+                new CelestialBody('Janus', 'Jan', 1.897e18, '#8b4513', 0.001008, 0.0068, 0.14, 0, 0.695, 0, 89, 0, 'Saturn'),
+                new CelestialBody('Epimetheus', 'Epi', 5.266e17, '#a0522d', 0.001009, 0.0099, 0.34, 0, 0.694, 0, 58, 0, 'Saturn'),
+                new CelestialBody('Telesto', 'Tel', 1.0e16, '#f5f5dc', 0.00126, 0.0002, 1.18, 0, 1.088, 0, 13, 0, 'Saturn'),
+                new CelestialBody('Calypso', 'Cly', 3.5e15, '#fffacd', 0.00126, 0.0005, 1.50, 0, 1.888, 0, 11, 0, 'Saturn'),
+                new CelestialBody('Helene', 'Hel', 1.1e16, '#f0e68c', 0.00141, 0.0022, 0.20, 0, 2.737, 0, 16, 0, 'Saturn'),
+                new CelestialBody('Puck', 'Puc', 2.9e18, '#708090', 0.000576, 0.0001, 0.32, 0, 0.761, 0, 81, 0, 'Uranus'),
+            ];
+            elapsedTime = 0;
+            updateTrailLifetimes();
+            initKuiperBelt();
+            initOortCloud();
+        }
+
+        function updateCamera() {
+            if (keys['q']) cameraRadius -= moveSpeed * cameraRadius * 0.1;
+            if (keys['e']) cameraRadius += moveSpeed * cameraRadius * 0.1;
+            if (keys['a']) cameraTheta += moveSpeed;
+            if (keys['d']) cameraTheta -= moveSpeed;
+            if (keys['w']) cameraPhi += moveSpeed;
+            if (keys['s']) cameraPhi -= moveSpeed;
+
+            cameraRadius = Math.max(1, Math.min(cameraRadius, 10000 * AU * BASE_SCALE));
+            cameraPhi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraPhi));
+
+            camera.position.x = cameraRadius * Math.sin(cameraPhi) * Math.cos(cameraTheta);
+            camera.position.y = cameraRadius * Math.cos(cameraPhi);
+            camera.position.z = cameraRadius * Math.sin(cameraPhi) * Math.sin(cameraTheta);
+            camera.lookAt(0, 0, 0); // Focus on Sun
+        }
+
+        function animate() {
+            if (!paused) elapsedTime += BASE_DT / 60;
+            celestialBodies.forEach(body => body.update());
+            kuiperBeltParticles.forEach(p => p.mesh.visible = showKuiperBelt);
+            oortCloudParticles.forEach(p => p.mesh.visible = showOortCloud);
+
+            updateCamera();
+            renderer.render(scene, camera);
+
+            const years = ((SECONDS_SINCE_J2000 + elapsedTime) / (365.25 * 86400)).toFixed(2);
+            infoPanel.innerHTML = `Simulated Years since J2000: ${years} | Camera Distance: ${(cameraRadius / (AU * BASE_SCALE)).toFixed(2)} AU`;
+            requestAnimationFrame(animate);
+        }
+
+        function updateBodySizes() {
+            celestialBodies.forEach(body => {
+                const scale = body.isSun ? starSizeMultiplier : (body.isMoon ? moonSizeMultiplier : planetSizeMultiplier);
+                body.mesh.scale.set(scale, scale, scale);
+            });
+        }
+
+        function updateTrailLifetimes() {
+            celestialBodies.forEach(body => {
+                if (body.a > 0) {
+                    body.trailLifetime = body.period * (body.isMoon ? moonTrailMultiplier : planetTrailMultiplier) / BASE_DT;
+                }
+            });
+        }
+
+        function resetSimulation() {
+            scene.clear();
+            initSimulation();
+        }
+
+        function togglePause() {
+            paused = !paused;
+        }
+
+        function toggleLabels() {
+            showLabels = !showLabels;
+        }
+
+        function toggleMoonTrails() {
+            showMoonTrails = !showMoonTrails;
+        }
+
+        function toggleMoons() {
+            showMoons = !showMoons;
+        }
+
+        function togglePlanets() {
+            showPlanets = !showPlanets;
+        }
+
+        function toggleSun() {
+            showSun = !showSun;
+        }
+
+        function toggleKuiperBelt() {
+            showKuiperBelt = !showKuiperBelt;
+        }
+
+        function toggleOortCloud() {
+            showOortCloud = !showOortCloud;
+        }
+
+        initSimulation();
+        animate();
+    </script>
+</body>
+</html>
